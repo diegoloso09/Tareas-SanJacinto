@@ -1,0 +1,20 @@
+{
+  "name": "Tareas — San Jacinto",
+  "short_name": "Tareas",
+  "description": "Organizador de proyectos · Frigorífico San Jacinto",
+  "lang": "es",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "/tareas-sanjacinto/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f5f3",
+  "theme_color": "#a6192e",
+  "categories": ["productivity", "business"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

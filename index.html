@@ -2,13 +2,26 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Tareas — San Jacinto</title>
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#a6192e">
+<meta name="description" content="Organizador de proyectos · Frigorífico San Jacinto">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Tareas">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@400;600;700&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-  import { getFirestore, collection, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+  import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, CACHE_SIZE_UNLIMITED, collection, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   const firebaseConfig = {
     apiKey: "AIzaSyCruGWPLm2EqsHEq-IsAyg0MdbCewUEAWs",
@@ -20,7 +33,21 @@
   };
 
   const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
+  // Persistencia offline: cache local en IndexedDB con soporte multi-tab
+  let db;
+  try {
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+        cacheSizeBytes: CACHE_SIZE_UNLIMITED
+      })
+    });
+  } catch (e) {
+    console.warn('Persistencia multi-tab no disponible, usando fallback:', e);
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({ cacheSizeBytes: CACHE_SIZE_UNLIMITED })
+    });
+  }
   const tasksCol = collection(db, 'tareas');
 
   // Expose DB functions to global scope
@@ -556,7 +583,10 @@ textarea::placeholder { color: var(--gray-md); }
   </div>
   <div class="header-title" style="margin-left:1.25rem;padding-left:1.25rem;border-left:1px solid var(--gray-lt);">Tareas</div>
   <div class="header-subtitle">Organizador de proyectos</div>
-  <div id="syncStatus" style="font-size:11px;color:#888;margin-left:auto;font-weight:500;">● Conectando...</div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:12px;">
+    <button id="installBtn" onclick="installApp()" style="display:none;background:var(--white);border:1px solid var(--red);color:var(--red);border-radius:4px;padding:5px 12px;font-size:11px;font-weight:600;font-family:var(--sans);cursor:pointer;letter-spacing:0.03em;text-transform:uppercase;">Instalar app</button>
+    <div id="syncStatus" style="font-size:11px;color:#888;font-weight:500;white-space:nowrap;">● Conectando...</div>
+  </div>
 </header>
 
 <div class="container">
@@ -584,10 +614,8 @@ textarea::placeholder { color: var(--gray-md); }
         </div>
         <div class="field-group">
           <label>Proyecto</label>
-          <select id="pProjectSelect" onchange="handleProjectSelect(this)">
-            <option value="">— Sin proyecto —</option>
-          </select>
-          <input type="text" id="pProjectNew" placeholder="Nombre del nuevo proyecto..." style="display:none;margin-top:6px;" />
+          <input type="text" id="pProject" list="projectsList" />
+          <datalist id="projectsList"></datalist>
         </div>
         <div class="field-group">
           <label>Fecha límite</label>
@@ -635,11 +663,17 @@ window.initFirestore = function() {
     tasks = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     renderTasks();
     const el = document.getElementById('syncStatus');
-    if (el) { el.textContent = '● Sincronizado'; el.style.color = '#3b6d11'; }
+    if (el) {
+      if (navigator.onLine) { el.textContent = '● Sincronizado'; el.style.color = '#3b6d11'; }
+      else { el.textContent = '● Offline (datos locales)'; el.style.color = '#b15c00'; }
+    }
   }, (err) => {
     console.error('Firestore error:', err);
     const el = document.getElementById('syncStatus');
-    if (el) { el.textContent = '● Sin conexión'; el.style.color = '#993C1D'; }
+    if (el) {
+      if (!navigator.onLine) { el.textContent = '● Offline (datos locales)'; el.style.color = '#b15c00'; }
+      else { el.textContent = '● Sin conexión'; el.style.color = '#993C1D'; }
+    }
   });
 };
 
@@ -711,10 +745,7 @@ Responde SOLO con JSON valido sin markdown ni texto extra:
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 200,
@@ -730,11 +761,12 @@ Responde SOLO con JSON valido sin markdown ni texto extra:
     document.getElementById('pProject').value = parsed.project || '';
     document.getElementById('pDue').value = parsed.due || '';
     document.getElementById('pPriority').value = parsed.priority || 'media';
-    populateProjectSelect(parsed.project || '');
+    document.getElementById('projectsList').innerHTML = projects.map(p => `<option value="${p}">`).join('');
   } catch(e) {
-    console.error('API error:', e);
-    // Fallback: local parsing
-    localParse(raw);
+    document.getElementById('pTitle').value = raw;
+    document.getElementById('pProject').value = '';
+    document.getElementById('pDue').value = '';
+    document.getElementById('pPriority').value = 'media';
   }
 
   document.getElementById('previewForm').style.display = 'block';
@@ -745,7 +777,7 @@ Responde SOLO con JSON valido sin markdown ni texto extra:
 async function confirmTask() {
   const task = {
     title: document.getElementById('pTitle').value.trim(),
-    project: getProjectFromForm() || null,
+    project: document.getElementById('pProject').value.trim() || null,
     due: document.getElementById('pDue').value || null,
     priority: document.getElementById('pPriority').value,
     done: false,
@@ -861,110 +893,6 @@ function renderGroup(list) {
 }
 
 
-
-
-// ── PROJECT DROPDOWN HELPERS ──
-function getProjectsFromTasks() {
-  return [...new Set(tasks.map(t => t.project).filter(Boolean))].sort();
-}
-
-function populateProjectSelect(selectedProject) {
-  const sel = document.getElementById('pProjectSelect');
-  const projects = getProjectsFromTasks();
-
-  // Always include selectedProject even if new
-  const allProjects = selectedProject && !projects.includes(selectedProject)
-    ? [...projects, selectedProject]
-    : projects;
-
-  sel.innerHTML = '<option value="">— Sin proyecto —</option>' +
-    allProjects.map(p => `<option value="${p}" ${p === selectedProject ? 'selected' : ''}>${p}</option>`).join('') +
-    '<option value="__new__">+ Nuevo proyecto...</option>';
-
-  // If selected is a new one not in list, show it selected
-  if (selectedProject && !projects.includes(selectedProject) && selectedProject !== '__new__') {
-    sel.value = selectedProject;
-  }
-
-  document.getElementById('pProjectNew').style.display = 'none';
-  document.getElementById('pProjectNew').value = '';
-}
-
-function handleProjectSelect(sel) {
-  const newInput = document.getElementById('pProjectNew');
-  if (sel.value === '__new__') {
-    newInput.style.display = 'block';
-    newInput.focus();
-  } else {
-    newInput.style.display = 'none';
-    newInput.value = '';
-  }
-}
-
-function getProjectFromForm() {
-  const sel = document.getElementById('pProjectSelect');
-  const newInput = document.getElementById('pProjectNew');
-  if (sel.value === '__new__') return newInput.value.trim() || null;
-  return sel.value || null;
-}
-
-function setProjectInForm(project) {
-  populateProjectSelect(project);
-}
-
-// ── LOCAL FALLBACK PARSER ──
-function localParse(raw) {
-  const text = raw.toLowerCase();
-  const today = new Date();
-
-  // Priority
-  let priority = 'media';
-  if (/urgente|hoy|ya |ahora|importante|cuanto antes|lo antes/.test(text)) priority = 'alta';
-  else if (/cuando pueda|sin apuro|algún día|algun dia|eventualmente/.test(text)) priority = 'baja';
-
-  // Date
-  let due = null;
-  const _dow = today.getDay();
-  const _dToFri = ((_dow <= 5) ? (5 - _dow) || 7 : 6);
-  const fri = new Date(today); fri.setDate(today.getDate() + _dToFri);
-  const tom = new Date(today); tom.setDate(today.getDate() + 1);
-  const in7 = new Date(today); in7.setDate(today.getDate() + 7);
-  const in14 = new Date(today); in14.setDate(today.getDate() + 14);
-
-  if (/\bhoy\b|urgente|ya |ahora/.test(text)) due = today.toISOString().split('T')[0];
-  else if (/mañana|manana/.test(text)) due = tom.toISOString().split('T')[0];
-  else if (/esta semana|viernes/.test(text)) due = fri.toISOString().split('T')[0];
-  else if (/semana que viene|próxima semana|proxima semana/.test(text)) {
-    const nw = new Date(today); nw.setDate(today.getDate() + 7 - _dow + 1);
-    due = nw.toISOString().split('T')[0];
-  }
-  else if (priority === 'alta') due = fri.toISOString().split('T')[0];
-  else if (priority === 'media') due = in7.toISOString().split('T')[0];
-  else due = in14.toISOString().split('T')[0];
-
-  // Project match
-  const existingProjects = [...new Set(tasks.map(t => t.project).filter(Boolean))];
-  let project = null;
-  for (const p of existingProjects) {
-    if (text.includes(p.toLowerCase())) { project = p; break; }
-  }
-  if (!project) {
-    if (/nirea|rack|stow|tarik/.test(text)) project = 'NIREA Rack';
-    else if (/san jacinto|frigorifico|frigorífico|condensado|digester|pata|bovino/.test(text)) project = 'San Jacinto';
-    else if (/ucu|clase|mba|sesión|sesion|caso/.test(text)) project = 'UCU MBA';
-    else project = 'General';
-  }
-
-  // Title: capitalize and clean up a bit, can't rewrite without AI
-  const title = raw.trim().charAt(0).toUpperCase() + raw.trim().slice(1);
-
-  document.getElementById('pTitle').value = title;
-  setProjectInForm(project);
-  document.getElementById('pDue').value = due;
-  document.getElementById('pPriority').value = priority;
-  populateProjectSelect(project);
-}
-
 // ── VOICE INPUT ──
 let recognition = null;
 let isRecording = false;
@@ -1022,6 +950,83 @@ function stopMic() {
 
 // Fallback: if Firebase loads after window load
 if (window._firestoreFns) window.initFirestore();
+</script>
+
+<script>
+// ── PWA: Service Worker + Install prompt + Online/Offline ──────────
+(function() {
+  // Registrar service worker
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js')
+        .then(reg => {
+          // Si hay una actualización esperando, activarla
+          if (reg.waiting) reg.waiting.postMessage('SKIP_WAITING');
+          reg.addEventListener('updatefound', () => {
+            const sw = reg.installing;
+            if (!sw) return;
+            sw.addEventListener('statechange', () => {
+              if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+                // Nueva versión lista — la próxima recarga la usará
+                console.log('SW actualizado, recargá para aplicar.');
+              }
+            });
+          });
+        })
+        .catch(err => console.warn('SW falló:', err));
+
+      // Auto-reload cuando cambia el controller (nueva versión activa)
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        // No recargo automáticamente para no perder borradores; sólo log.
+      });
+    });
+  }
+
+  // Capturar evento de instalación (Chrome / Edge / Android)
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    const btn = document.getElementById('installBtn');
+    if (btn) btn.style.display = 'inline-block';
+  });
+
+  window.installApp = async function() {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    const btn = document.getElementById('installBtn');
+    if (btn) btn.style.display = 'none';
+    console.log('Instalación:', outcome);
+  };
+
+  window.addEventListener('appinstalled', () => {
+    const btn = document.getElementById('installBtn');
+    if (btn) btn.style.display = 'none';
+    deferredPrompt = null;
+  });
+
+  // Indicador online/offline en vivo
+  function updateOnlineStatus() {
+    const el = document.getElementById('syncStatus');
+    if (!el) return;
+    if (!navigator.onLine) {
+      el.textContent = '● Offline (datos locales)';
+      el.style.color = '#b15c00';
+    } else {
+      el.textContent = '● Sincronizado';
+      el.style.color = '#3b6d11';
+    }
+  }
+  window.addEventListener('online', updateOnlineStatus);
+  window.addEventListener('offline', updateOnlineStatus);
+  // Estado inicial al cargar
+  window.addEventListener('load', () => setTimeout(updateOnlineStatus, 500));
+})();
 </script>
 </body>
 </html>
