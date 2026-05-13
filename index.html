@@ -1253,6 +1253,40 @@ textarea::placeholder { color: var(--gray-md); }
 </div>
 
 <script>
+// ── PROXY DE LA IA (Cloudflare Worker) ────────────────────────────
+// EDITAR ACÁ con la URL de tu worker. Sin esto, la "Interpretar" tarea no funciona.
+// Override opcional: localStorage.setItem('proxyUrl', 'https://...');
+const ANTHROPIC_PROXY_URL_DEFAULT = 'https://YOUR-WORKER.workers.dev';
+function getProxyUrl() {
+  try {
+    const stored = localStorage.getItem('proxyUrl');
+    if (stored) return stored;
+  } catch(e) {}
+  return ANTHROPIC_PROXY_URL_DEFAULT;
+}
+function isProxyConfigured() {
+  const u = getProxyUrl();
+  return u && !u.includes('YOUR-WORKER') && /^https?:\/\//.test(u);
+}
+
+// Mostrar mensaje breve al usuario (toast simple)
+function uiToast(msg, kind) {
+  let el = document.getElementById('uiToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'uiToast';
+    el.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:10px 18px;border-radius:6px;font-size:13px;font-family:var(--sans);box-shadow:0 4px 16px rgba(0,0,0,0.25);z-index:2000;max-width:90%;text-align:center;transition:opacity 0.25s;opacity:0;';
+    document.body.appendChild(el);
+  }
+  if (kind === 'error') el.style.background = '#a6192e';
+  else if (kind === 'warn') el.style.background = '#b15c00';
+  else el.style.background = '#222';
+  el.textContent = msg;
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 4200);
+}
+
 let tasks = [];
 let currentFilter = 'todas';
 let projectFilter = null;
@@ -1666,41 +1700,62 @@ async function parseTarea() {
   const _in14 = new Date(_now); _in14.setDate(_now.getDate() + 14);
   const _in14Str = _in14.toISOString().split('T')[0];
 
-  const systemPrompt = `Sos un asistente que convierte texto informal en tareas ejecutables.
-Hoy es ${dayName} ${today}. Manana: ${_tomStr}. Viernes de esta semana: ${_friStr}.
+  const systemPrompt = `Sos un asistente que convierte texto informal en tareas ejecutables para el equipo del Frigorifico San Jacinto.
+Hoy es ${dayName} ${today}. Manana: ${_tomStr}. Viernes de esta semana: ${_friStr}. En 7 dias: ${_in7Str}. En 14 dias: ${_in14Str}.
 Proyectos existentes: ${projects.length ? projects.map(p => '"'+p+'"').join(', ') : 'ninguno aun'}.
 
-TODOS los campos son OBLIGATORIOS. No uses null salvo que sea imposible inferir.
+TODOS los 5 campos son OBLIGATORIOS. No uses null salvo que sea imposible inferir.
 
-1. title: SIEMPRE reescribi como accion ejecutable. Verbo infinitivo + objeto + contexto minimo. Max 7 palabras. NUNCA copies el texto original literalmente. Buenos ejemplos: "Llamar a Tarik sobre motor rack NIREA", "Revisar modelo margen pata bovina", "Enviar informe condensado a gerencia".
+1. title: SIEMPRE reescribi como accion ejecutable. Verbo en infinitivo + objeto + contexto minimo. Max 8 palabras. NUNCA copies el texto original literalmente, transformalo.
+   Ejemplos buenos:
+   - "tarik me dijo que el motor del rack esta haciendo ruido raro" → "Revisar motor del rack con Tarik"
+   - "no me olvido de pagar la luz el viernes" → "Pagar factura de luz"
+   - "hablar con gerencia sobre el modelo de margen de la pata bovina" → "Presentar modelo de margen pata bovina"
+   - "todas las mañanas controlar temperatura camara 3" → "Controlar temperatura camara 3"
 
-2. project: SIEMPRE asigna uno. Usa el existente con mejor match semantico aunque sea parcial. Si no hay match, crea uno nuevo coherente con el contexto (ej: "NIREA Rack", "Produccion", "Personal", "San Jacinto"). Solo null si el texto es absolutamente ininterpretable.
+2. project: SIEMPRE asigna uno. Primero intentá hacer match semántico con los proyectos existentes aunque sea parcial (ej: "NIREA Rack" matchea con texto que mencione rack, nirea, motores). Si ninguno encaja, crea uno nuevo coherente y conciso (1-3 palabras, ej: "NIREA Rack", "Camaras Frio", "Produccion", "Administracion", "Mantenimiento", "Personal", "Comercial"). Solo null si el texto es absolutamente ininterpretable.
 
 3. due: SIEMPRE pon una fecha YYYY-MM-DD:
-   - urgente / hoy / ya / lo antes posible → ${today}
-   - manana → ${_tomStr}
-   - esta semana / resolver pronto / sin fecha explicita + urgente → ${_friStr}
-   - el viernes → ${_friStr}
+   - "urgente" / "hoy" / "ya" / "lo antes posible" / "ahora" → ${today}
+   - "manana" → ${_tomStr}
+   - "el viernes" / "este viernes" / "esta semana" → ${_friStr}
+   - "el lunes/martes/etc" → calcula el proximo dia de la semana correspondiente
+   - "en X dias" → suma X dias a hoy
    - sin referencia temporal + prioridad alta → ${_friStr}
    - sin referencia temporal + prioridad media → ${_in7Str}
    - sin referencia temporal + prioridad baja → ${_in14Str}
 
-4. priority: alta si dice urgente/hoy/manana/esta semana/importante/ya. baja si dice cuando pueda/sin apuro/algun dia. media en el resto.
+4. priority: alta si dice urgente/hoy/manana/esta semana/importante/critico/ya/clave. baja si dice "cuando pueda" / "sin apuro" / "algun dia" / "no corre". media en todo el resto.
 
-Responde SOLO con JSON valido sin markdown ni texto extra:
-{"title":"...","project":"...","due":"YYYY-MM-DD","priority":"alta|media|baja"}`;
+5. recurrence: detecta si la tarea se repite con regularidad. Valores validos: "daily", "weekly", "monthly", "none".
+   - "daily": "todos los dias", "diariamente", "cada dia", "rutina diaria", "todas las mañanas", "todas las noches", "cada turno"
+   - "weekly": "todas las semanas", "semanal", "semanalmente", "cada lunes/martes/...", "todos los viernes", "una vez por semana"
+   - "monthly": "todos los meses", "mensual", "mensualmente", "cada mes", "fin de mes", "principio de mes", "una vez al mes"
+   - "none": cualquier accion puntual sin patron de repeticion (la mayoria)
+
+Si una tarea es recurrente, el due deberia ser la PROXIMA ocurrencia (ej: "controlar camara todos los lunes" un miercoles → due = proximo lunes).
+
+Responde SOLO con JSON valido, sin markdown, sin comentarios, sin texto extra:
+{"title":"...","project":"...","due":"YYYY-MM-DD","priority":"alta|media|baja","recurrence":"daily|weekly|monthly|none"}`;
 
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    if (!isProxyConfigured()) {
+      throw new Error('Proxy IA no configurado. Editá ANTHROPIC_PROXY_URL_DEFAULT en index.html o seteá localStorage.proxyUrl');
+    }
+    const resp = await fetch(getProxyUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 200,
+        max_tokens: 300,
         system: systemPrompt,
         messages: [{ role: 'user', content: raw }]
       })
     });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error('Proxy respondió ' + resp.status + ': ' + errText.slice(0, 200));
+    }
     const data = await resp.json();
     const text = data.content.filter(c => c.type === 'text').map(c => c.text).join('');
     const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
@@ -1709,14 +1764,20 @@ Responde SOLO con JSON valido sin markdown ni texto extra:
     document.getElementById('pProject').value = parsed.project || '';
     document.getElementById('pDue').value = parsed.due || '';
     document.getElementById('pPriority').value = parsed.priority || 'media';
-    if (document.getElementById('pRecurrence')) document.getElementById('pRecurrence').value = 'none';
+    if (document.getElementById('pRecurrence')) {
+      const validRec = ['daily','weekly','monthly','none'];
+      document.getElementById('pRecurrence').value = validRec.includes(parsed.recurrence) ? parsed.recurrence : 'none';
+    }
     document.getElementById('projectsList').innerHTML = projects.map(p => `<option value="${p}">`).join('');
   } catch(e) {
+    console.error('parseTarea falló:', e);
     document.getElementById('pTitle').value = raw;
     document.getElementById('pProject').value = '';
     document.getElementById('pDue').value = '';
     document.getElementById('pPriority').value = 'media';
     if (document.getElementById('pRecurrence')) document.getElementById('pRecurrence').value = 'none';
+    const reason = (e && e.message) ? e.message : 'error desconocido';
+    uiToast('IA no disponible: ' + reason + '. Completá manual o revisá la consola.', 'error');
   }
 
   document.getElementById('previewForm').style.display = 'block';
@@ -2250,6 +2311,13 @@ function stopMic() {
   const ta = document.getElementById('rawInput');
   if (ta && !ta.value) ta.placeholder = 'Escribí, pegá texto de WhatsApp, o usá el micrófono\nEj: llamar a Tarik el viernes sobre el rack NIREA, urgente';
 }
+
+// Avisar si el proxy IA no está configurado (sólo una vez al cargar)
+setTimeout(() => {
+  if (!isProxyConfigured()) {
+    uiToast('⚙ Proxy IA no configurado. Editá ANTHROPIC_PROXY_URL_DEFAULT en index.html.', 'warn');
+  }
+}, 1500);
 
 // Fallback: if Firebase loads after window load
 if (window._firestoreFns) window.initFirestore();
