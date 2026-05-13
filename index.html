@@ -1256,7 +1256,7 @@ textarea::placeholder { color: var(--gray-md); }
 // ── PROXY DE LA IA (Cloudflare Worker) ────────────────────────────
 // EDITAR ACÁ con la URL de tu worker. Sin esto, la "Interpretar" tarea no funciona.
 // Override opcional: localStorage.setItem('proxyUrl', 'https://...');
-const ANTHROPIC_PROXY_URL_DEFAULT = 'https://YOUR-WORKER.workers.dev';
+const ANTHROPIC_PROXY_URL_DEFAULT = 'https://round-forest-f685.diego-silvadalla.workers.dev';
 function getProxyUrl() {
   try {
     const stored = localStorage.getItem('proxyUrl');
